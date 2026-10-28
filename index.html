@@ -1,0 +1,233 @@
+<!doctype html>
+<html lang="pl"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Portfel bota M6</title>
+<script>
+(function(){
+const ERR=/b[lł][aą]d|error|exception|traceback|alarm|zablok|nieudan|nie dzia|stop:|wylogowan|unrecognized/i;
+const enc=new TextEncoder();
+const b64=s=>Uint8Array.from(atob(s),c=>c.charCodeAt(0));
+let haslo=null,key=null,keySalt=null,bundle=null,bundleAt=0,formShown=false;
+let unlock;const ready=new Promise(r=>unlock=r);
+const COOKIE='panel_haslo',DNI=30;
+function czytajCookie(){
+  try{const m=document.cookie.match(new RegExp('(?:^|; )'+COOKIE+'=([^;]*)'));return m?decodeURIComponent(m[1]):null;}catch(e){return null;}
+}
+function zapiszCookie(v){
+  try{document.cookie=COOKIE+'='+encodeURIComponent(v)+'; max-age='+DNI*86400+'; path=/; SameSite=Strict'+(location.protocol==='https:'?'; Secure':'');}catch(e){}
+}
+function usunCookie(){
+  try{document.cookie=COOKIE+'=; max-age=0; path=/; SameSite=Strict'+(location.protocol==='https:'?'; Secure':'');}catch(e){}
+}
+function formularz(blad){
+  const d=document.createElement('div');
+  d.style.cssText='position:fixed;inset:0;background:rgba(0,0,0,.55);display:flex;align-items:center;justify-content:center;z-index:99';
+  d.innerHTML='<form style="background:var(--card);color:var(--ink);padding:18px;border:1px solid var(--line);border-radius:10px;min-width:260px;font:14px system-ui"><div style="margin-bottom:8px">Hasło do panelu</div><input type="password" id="pw" autocomplete="current-password" style="width:100%;padding:6px;font:inherit"><label style="display:flex;gap:6px;align-items:center;margin-top:8px;font-size:13px"><input type="checkbox" id="zap" checked> zapamiętaj na tym urządzeniu (30 dni)</label><div id="pwerr" style="color:var(--neg);font-size:12px;margin-top:6px;min-height:14px">'+(blad||'')+'</div><button style="margin-top:8px;padding:6px 14px;font:inherit;cursor:pointer">Otwórz</button></form>';
+  document.body.appendChild(d);
+  d.querySelector('form').onsubmit=async e=>{
+    e.preventDefault();
+    haslo=d.querySelector('#pw').value;
+    try{
+      await odszyfruj();
+      if(d.querySelector('#zap').checked) zapiszCookie(haslo); else usunCookie();
+      d.remove();unlock();
+    }catch(x){d.querySelector('#pwerr').textContent='Złe hasło albo brak migawki';haslo=null;}
+  };
+}
+async function startowe(){
+  const zapisane=czytajCookie();
+  if(zapisane){
+    haslo=zapisane;
+    try{await odszyfruj();unlock();return;}
+    catch(e){usunCookie();haslo=null;}
+  }
+  formularz(zapisane?'Zapisane hasło nie pasuje - wpisz ponownie':'');
+}
+async function odszyfruj(){
+  const r=await fetch('migawka.json?t='+Date.now(),{cache:'no-store'});
+  if(!r.ok) throw new Error('brak migawki');
+  const m=await r.json();
+  let k=key;
+  if(!k||keySalt!==m.salt){
+    const base=await crypto.subtle.importKey('raw',enc.encode(haslo),'PBKDF2',false,['deriveKey']);
+    k=await crypto.subtle.deriveKey({name:'PBKDF2',salt:b64(m.salt),iterations:m.it,hash:'SHA-256'},base,{name:'AES-GCM',length:256},false,['decrypt']);
+  }
+  const pt=await crypto.subtle.decrypt({name:'AES-GCM',iv:b64(m.iv)},k,b64(m.ct));
+  bundle=JSON.parse(new TextDecoder().decode(pt));
+  key=k;keySalt=m.salt;bundleAt=Date.now();
+}
+const reply=o=>new Response(JSON.stringify(o),{headers:{'Content-Type':'application/json; charset=utf-8'}});
+const origFetch=window.fetch.bind(window);
+window.fetch=async function(url,opts){
+  const u=new URL(String(url),location.href);
+  if(!u.pathname.startsWith('/api/')) return origFetch(url,opts);
+  if(!bundle){
+    if(!formShown){formShown=true;startowe();}
+    await ready;
+  }else if(Date.now()-bundleAt>60000){
+    try{await odszyfruj();}catch(e){}
+  }
+  if(u.pathname==='/api/state') return reply(bundle.state);
+  if(u.pathname==='/api/log'){
+    const src=u.searchParams.get('src')||'dziennik';
+    const L=bundle.logs[src];
+    if(!L) return reply({error:'nieznane źródło logu'});
+    if(L.error) return reply(L);
+    let lines=L.lines||[];
+    const q=(u.searchParams.get('q')||'').toLowerCase();
+    if(q) lines=lines.filter(l=>l.toLowerCase().includes(q));
+    if(u.searchParams.get('err')==='1') lines=lines.filter(l=>ERR.test(l));
+    const n=parseInt(u.searchParams.get('n')||'200',10)||200;
+    return reply({...L,lines:lines.slice(-n),razem:lines.length});
+  }
+  return reply({error:'nie ma'});
+};
+})();
+</script>
+<style>
+:root{--bg:#f6f7f9;--card:#fff;--ink:#14181f;--mute:#667085;--line:#e3e6eb;--pos:#0a7d3c;--neg:#c0322b;--acc:#2456d6;--warn:#a36200;--chip:#eef1f6;--pur:#8a4fd1}
+@media (prefers-color-scheme:dark){:root:not([data-theme=light]){--bg:#0f1218;--card:#171b23;--ink:#e8ebf0;--mute:#8f98a8;--line:#272d38;--pos:#3ecf74;--neg:#ff6b61;--acc:#7aa2ff;--warn:#f0b24a;--chip:#212733;--pur:#b58cf0}}
+*{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--ink);font:14px/1.45 system-ui,Segoe UI,Roboto,sans-serif}
+main{max-width:1180px;margin:0 auto;padding:16px}
+header{display:flex;flex-wrap:wrap;gap:8px 16px;align-items:center;justify-content:space-between;margin-bottom:14px}
+h1{font-size:20px;margin:0}h2{font-size:15px;margin:22px 0 8px}
+.pill{display:inline-flex;gap:6px;align-items:center;padding:3px 10px;border-radius:99px;background:var(--chip);font-size:12.5px}
+.dot{width:8px;height:8px;border-radius:50%;background:var(--mute)}.ok .dot{background:var(--pos)}.bad .dot{background:var(--neg)}
+.tiles{display:grid;grid-template-columns:repeat(auto-fit,minmax(170px,1fr));gap:10px}
+.tile{background:var(--card);border:1px solid var(--line);border-radius:10px;padding:12px 14px}
+.tile .l{color:var(--mute);font-size:12px}.tile .v{font-size:21px;font-weight:650;margin-top:2px;font-variant-numeric:tabular-nums}.tile .s{font-size:12px;color:var(--mute)}
+.card{background:var(--card);border:1px solid var(--line);border-radius:10px;overflow:auto}
+table{border-collapse:collapse;width:100%;min-width:640px}th,td{padding:7px 10px;text-align:right;border-bottom:1px solid var(--line);white-space:nowrap;font-variant-numeric:tabular-nums}
+th{font-size:11.5px;color:var(--mute);font-weight:600;text-transform:uppercase;letter-spacing:.03em}
+th:first-child,td:first-child{text-align:left}tr:last-child td{border-bottom:0}
+.pos{color:var(--pos)}.neg{color:var(--neg)}.mute{color:var(--mute)}.warn{color:var(--warn)}
+.tag{display:inline-block;padding:1px 8px;border-radius:99px;background:var(--chip);font-size:12px}
+.tag.g{color:var(--pos)}.tag.b{color:var(--acc)}.tag.w{color:var(--warn)}
+.note{color:var(--mute);font-size:12.5px;margin:6px 2px}
+.left{text-align:left!important;white-space:normal}
+.two{display:grid;grid-template-columns:repeat(auto-fit,minmax(300px,1fr));gap:10px}
+.box{background:var(--card);border:1px solid var(--line);border-radius:10px;padding:12px 14px}
+.box h3{margin:0 0 6px;font-size:14px;display:flex;gap:8px;align-items:center;justify-content:space-between}
+.kv{display:grid;grid-template-columns:auto 1fr;gap:3px 12px;font-size:13px}.kv span:nth-child(odd){color:var(--mute)}.kv span:nth-child(even){text-align:right}
+.tag.r{color:var(--neg)}
+.tabs{display:flex;gap:6px;margin:0 0 12px}.tabs button,.seg button{font:inherit;color:var(--ink);background:var(--card);border:1px solid var(--line);padding:6px 14px;border-radius:8px;cursor:pointer}
+.tabs button.on,.seg button.on{background:var(--acc);border-color:var(--acc);color:#fff}
+.toolbar{display:flex;flex-wrap:wrap;gap:8px 18px;margin-bottom:10px}.seg{display:flex;flex-wrap:wrap;gap:4px}.seg button{padding:5px 11px;font-size:13px}
+.logbox{margin:0;padding:10px 12px;max-height:520px;overflow:auto;font:12px/1.5 ui-monospace,Consolas,monospace;white-space:pre-wrap;word-break:break-word}
+.logbox .l{display:block;padding:0 2px;border-radius:3px}.logbox .e{color:var(--neg)}.logbox .w{color:var(--warn)}
+.inp{font:inherit;color:var(--ink);background:var(--card);border:1px solid var(--line);border-radius:8px;padding:5px 9px;font-size:13px}.chk{display:inline-flex;align-items:center;gap:6px;font-size:13px}
+@media(max-width:560px){main{padding:12px}.tile .v{font-size:18px}}
+</style></head><body><main>
+<header><h1>Portfel bota M6 <span class="mute" style="font-weight:400;font-size:14px">IBKR paper</span></h1>
+<div style="display:flex;gap:8px;flex-wrap:wrap"><span id="gw" class="pill"><i class="dot"></i><span>wczytywanie…</span></span><span id="upd" class="pill">–</span></div></header>
+<nav class="tabs"><button id="btn-portfel" onclick="setTab('portfel')">Portfel</button><button id="btn-logi" onclick="setTab('logi')">Statusy i logi</button></nav>
+<div id="warn" class="note warn"></div>
+<div id="tab-portfel">
+<div class="tiles" id="tiles"></div>
+<h2>Pozycje</h2><div class="card"><table id="pos"></table></div>
+<h2>8 banków: wymagane poziomy kupna</h2><div class="card"><table id="banks"></table></div>
+<div class="note">Poziom = wyższy z dwóch: B (szczyt 3 h − 1,1 × ATR) lub VWAP − 1,5% (tylko gdy odbicie „ok"). „Do poziomu" = ile kurs musi jeszcze spaść. Kurs i poziomy pochodzą z ostatniego przebiegu bota (dane IBKR opóźnione ok. 15 min). <b id="lvtime"></b></div>
+<h2>Zlecenia kupna</h2><div class="card"><table id="ord"></table></div>
+<div class="note">Odtworzone z dzisiejszych wpisów dziennika bota (wystawienia, anulowania, wypełnienia). Każde kupno ma dołączone zlecenia TP i stop, które ruszają po wypełnieniu kupna.</div>
+<h2>Transakcje</h2><div class="card"><table id="fills"></table></div>
+</div>
+<div id="tab-logi" hidden>
+<h2>Statusy procesów</h2><div class="card"><table id="procs"></table></div>
+<h2>Bot, nadzór i kontrola zleceń</h2><div class="two" id="sys"></div>
+<div class="card" style="margin-top:10px"><table id="kont"></table></div>
+<h2>Logi</h2>
+<div class="toolbar"><div id="logsrc" class="seg"></div>
+<div class="seg"><label class="chk"><input type="checkbox" id="logerr"> tylko błędy / alarmy</label><input id="logq" class="inp" placeholder="szukaj w logu…"><select id="logn" class="inp"><option>100</option><option selected>200</option><option>500</option><option>1000</option></select></div></div>
+<div class="card"><pre id="logbox" class="logbox"></pre></div><div id="logmeta" class="note"></div>
+<h2>Ostatnie zdarzenia bota</h2><div class="card"><table id="ev"></table></div>
+</div>
+</main>
+<script>
+const $=id=>document.getElementById(id);
+const esc=s=>String(s??"").replace(/[&<>"]/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[c]));
+const nf=(v,d=2)=>v==null||isNaN(v)?"–":Number(v).toLocaleString("pl-PL",{minimumFractionDigits:d,maximumFractionDigits:d});
+const zl=v=>v==null?"–":nf(v,2)+" zł";
+const sg=v=>v==null||isNaN(v)?"mute":(v>0?"pos":(v<0?"neg":"mute"));
+const sgn=(v,d=2,suf="")=>v==null||isNaN(v)?"–":(v>0?"+":"")+nf(v,d)+suf;
+const tile=(l,v,s,cls="")=>`<div class="tile"><div class="l">${l}</div><div class="v ${cls}">${v}</div><div class="s">${s||""}</div></div>`;
+const table=(el,head,rows,empty)=>{$(el).innerHTML="<thead><tr>"+head.map(h=>`<th>${h}</th>`).join("")+"</tr></thead><tbody>"+(rows.length?rows.join(""):`<tr><td colspan="${head.length}" class="left mute">${empty}</td></tr>`)+"</tbody>"};
+let LAST=null;
+function setTab(t){["portfel","logi"].forEach(n=>{$("tab-"+n).hidden=n!==t;$("btn-"+n).classList.toggle("on",n===t)});
+  try{history.replaceState(null,"","#"+t)}catch(e){} if(t==="logi"){initLogs();loadLog()}}
+const LOGSRC={dziennik:"Dziennik bota",konsola:"Konsola bota",nadzor:"Nadzór",ibc:"Gateway (IBC)",xtb:"Bot XTB",xtb_nadzor:"Nadzór XTB"};let LOGCUR="dziennik",LOGINIT=false,LOGT=null;
+function initLogs(){
+  if(LOGINIT)return;LOGINIT=true;
+  $("logsrc").innerHTML=Object.keys(LOGSRC).map(k=>`<button data-k="${k}">${LOGSRC[k]}</button>`).join("");
+  $("logsrc").onclick=e=>{const k=e.target.dataset.k;if(k){LOGCUR=k;markLog();loadLog(true)}};
+  $("logerr").onchange=()=>loadLog(true);$("logn").onchange=()=>loadLog(true);
+  $("logq").oninput=()=>{clearTimeout(LOGT);LOGT=setTimeout(()=>loadLog(true),350)};markLog();
+}
+function markLog(){document.querySelectorAll("#logsrc button").forEach(b=>b.classList.toggle("on",b.dataset.k===LOGCUR))}
+async function loadLog(jump){
+  if($("tab-logi").hidden)return;const box=$("logbox"),atEnd=jump||box.scrollHeight-box.scrollTop-box.clientHeight<40;
+  const qs=`src=${LOGCUR}&n=${$("logn").value}&q=${encodeURIComponent($("logq").value)}&err=${$("logerr").checked?1:0}`;
+  try{const d=await(await fetch("/api/log?"+qs)).json();
+    if(d.error){box.textContent="";$("logmeta").textContent=(d.name?d.name+": ":"")+d.error;return}
+    box.innerHTML=d.lines.length?d.lines.map(l=>`<span class="l ${/b[lł][aą]d|error|exception|traceback|alarm|zablok|nieudan|unrecognized/i.test(l)?"e":/uwaga|warn|stare|brak/i.test(l)?"w":""}">${esc(l)}</span>`).join(""):'<span class="mute">Brak pasujących wpisów.</span>';
+    $("logmeta").textContent=`${d.name} · ${d.lines.length} z ${d.razem} wierszy · plik ${d.plik} · zmieniony ${d.mtime}`;
+    if(atEnd)box.scrollTop=box.scrollHeight;
+  }catch(e){$("logmeta").textContent="Błąd pobierania logu: "+e}}
+function render(s){
+  LAST=s;
+  const z=s.zrodlo,a=s.account,d=new Date(),wSesji=d.getDay()>0&&d.getDay()<6&&d.getHours()>=9&&d.getHours()<17,stare=z.wiek_s==null||(wSesji&&z.wiek_s>600);
+  $("gw").className="pill "+(stare?"bad":"ok");
+  $("gw").lastChild.textContent="Dziennik bota"+(z.konto?" · "+z.konto:"");
+  $("upd").textContent="odświeżono "+s.czas.slice(11)+(z.ostatni_wpis?" · ostatni wpis bota "+z.ostatni_wpis.slice(5):"");
+  $("warn").textContent=z.wiek_s==null?"Brak dziennika bota.":stare?`Bot nic nie zapisał od ${Math.round(z.wiek_s/60)} min (ostatni wpis ${z.ostatni_wpis}).`:"";
+  const st=s.bot.stan||{}, r1=s.bot.regula_1||{}, bl=s.bot.blokady||{};
+  $("tiles").innerHTML=
+    tile("Kapitał bota",zl(s.budget==null?null:s.budget+a.total),"budżet "+zl(s.budget)+" + zysk razem")+
+    tile("Budżet bota",zl(s.budget),"zainwestowane "+zl(a.invested)+" · wolne "+zl(a.free_bot))+
+    tile("Zysk razem",sgn(a.total,2," zł"),a.total_pct==null?"":sgn(a.total_pct,2,"% budżetu"),sg(a.total))+
+    tile("Niezrealizowany",sgn(a.unrealized,2," zł"),"otwarte pozycje (kurs z dziennika)",sg(a.unrealized))+
+    tile("Zrealizowany",sgn(a.realized,2," zł"),"dziś "+sgn(a.realized_today,2," zł")+" · po prowizjach",sg(a.realized))+
+    tile("Banki w sesji",st.banki_sesja||"–","1 h: "+(st.banki_1h||"–")+" · odbicie: "+(st.czekanie_na_odbicie||"–"))+
+    tile("Reguły ochronne",esc(r1.stan||"–"),"SMA175 "+esc(r1.SMA175||"–")+" · RSI14 "+esc(r1.RSI14||"–")+" · blokady: "+esc(bl.zablokowane||"–"));
+  table("procs",["Proces","Status","PID","Uruchomiony","Ostatnia aktywność","Źródło"],
+    s.procesy.map(p=>`<tr><td class="left"><b>${esc(p.nazwa)}</b></td><td class="left">${p.dziala?'<span class="tag g">działa</span>':'<span class="tag r">NIE DZIAŁA</span>'}</td>
+    <td>${p.pid??"–"}</td><td>${esc(p.od||"–")}</td><td>${esc(p.aktywnosc)}</td><td class="left mute">${esc(p.zrodlo)}</td></tr>`),"");
+  const bp=s.bot.proces, nz=s.nadzor, k=s.kontrola;
+  const alive=p=>p?`<span class="tag g">działa</span> <span class="mute">pid ${p.pid} od ${p.od}</span>`:'<span class="tag r">NIE DZIAŁA</span>';
+  const kv=a=>'<div class="kv">'+a.map(([l,v])=>`<span>${l}</span><span>${v}</span>`).join("")+"</div>";
+  const nzStale=nz.ostatnie_sprawdzenie&&nz.ostatnie_sprawdzenie.slice(0,10)!==s.czas.slice(0,10);
+  const nzTag=nzStale?'<span class="tag w">stare: '+esc(nz.wynik||"–")+" (od startu brak sprawdzeń)</span>":nz.wynik==="OK"?'<span class="tag g">OK</span>':nz.wynik==="ALARM"?'<span class="tag r">ALARM</span>':'<span class="tag">'+esc(nz.wynik||"brak")+"</span>";
+  $("sys").innerHTML=
+   `<div class="box"><h3>Bot IBKR demo ${alive(bp)}</h3>`+kv([["Ostatni wpis w dzienniku",esc(s.bot.ostatni_wpis||"–")],["Budżet",zl(s.budget)],["Konto",esc(z.konto||"–")],["Ostatni stan",esc(z.stan_czas||"–")]])+`</div>`+
+   `<div class="box"><h3>Nadzór ${alive(nz.proces)}</h3>`+kv([["Ostatnie sprawdzenie",esc(nz.ostatnie_sprawdzenie||"–")+" "+nzTag],["Start (z logu)",esc(nz.start_log||"–")],["Ostatni raport",nz.raport?esc(nz.raport.nazwa)+" · "+nz.raport.czas:"–"]])+
+     (nz.alarmy.length&&!nzStale?'<div class="note neg left">'+nz.alarmy.map(a=>"• "+esc(a)).join("<br>")+"</div>":"")+`<div class="note">${esc(nz.harmonogram)}</div></div>`+
+   `<div class="box"><h3>Kontrola zleceń <span class="tag b">AI: ${esc(k.tryb_ai)}</span></h3>`+kv([["Ostatni dzień z kontrolą",esc(k.dzien||"–")],["Sprawdzone zlecenia",k.sprawdzone],["Wysłane / zablokowane",`<span class="pos">${k.wyslane}</span> / <span class="${k.zablokowane?"neg":"mute"}">${k.zablokowane}</span>`],["Blokady zasad (kod)",k.blokady_zasad],["AI niedostępna",k.ai_niedostepna],["Model",esc(k.model)]])+
+     (k.ostatnia_blokada?`<div class="note warn left">Ostatnia blokada ${esc(k.ostatnia_blokada.czas)} ${esc(k.ostatnia_blokada.sym)}: ${esc(k.ostatnia_blokada.powod)}</div>`:"")+`</div>`;
+  table("kont",["Czas","Spółka","Część","Typ","Limit","Ilość","Zasady","Ocena AI","Decyzja"],
+    k.ostatnie.map(r=>`<tr><td class="left">${r.czas}</td><td><b>${esc(r.sym)}</b></td><td>${esc(r.czesc)}</td><td>${esc(r.typ)}</td><td>${esc(r.limit)}</td><td>${esc(r.ilosc)}</td>
+    <td class="${r.zasady==="OK"?"pos":"neg"}">${esc(r.zasady)}</td><td class="left mute" title="${esc(r.ai)}">${esc(r.ai.slice(0,70))}${r.ai.length>70?"…":""}</td>
+    <td>${r.decyzja?`<span class="tag ${r.decyzja==="WYSLANE"?"g":"r"}">${r.decyzja==="WYSLANE"?"wysłane":"zablokowane"}</span>`:"–"}</td></tr>`),"Brak wpisów kontroli w dzienniku.");
+  table("pos",["Spółka","Ilość","Cena kupna","Kurs","Wartość","Zysk zł","Zysk %","Zysk (TP)","Stop","Kupiono","Sesje"],
+    s.positions.map(p=>`<tr><td><b>${p.sym}</b></td><td>${nf(p.qty,0)}</td><td>${nf(p.avg)}</td><td>${nf(p.price)}</td><td>${zl(p.value)}</td>
+    <td class="${sg(p.pnl)}">${sgn(p.pnl)}</td><td class="${sg(p.pnl_pct)}">${sgn(p.pnl_pct,2,"%")}</td><td>${nf(p.tp)}</td>
+    <td>${nf(p.stop)}${p.stop_typ&&p.stop_typ!=="staly"?' <span class="mute">'+esc(p.stop_typ)+"</span>":""}</td><td>${p.bought||"–"}</td><td>${p.sessions??"–"}</td></tr>`),"Brak otwartych pozycji.");
+  table("banks",["Spółka","Status","Kurs","Poziom kupna","Do poziomu","Ilość","B: szczyt 3 h","VWAP / poziom","TP","ATR 1h"],
+    s.banks.map(b=>{
+      const st=b.has_position?'<span class="tag g">pozycja</span>':b.buy_order?`<span class="tag b">zlecenie @ ${nf(b.buy_order.price)}</span>`:'<span class="tag w">brak zlecenia</span>';
+      const B=b.B||{},A=b.A||{};
+      return `<tr><td><b>${b.sym}</b></td><td class="left">${st}</td><td>${nf(b.kurs)}</td><td><b>${nf(b.level)}</b> <span class="mute">${b.level_part||""}</span></td>
+      <td class="${sg(b.dist_pct)}">${sgn(b.dist_pct,2,"%")}</td><td>${b.qty??"–"}</td><td>${nf(B.szczyt)}</td>
+      <td>${nf(B.vwap||A.vwap)} / ${nf(A.poziom)}</td><td>${esc(B.tp||A.tp||"–")}</td><td>${esc(b.atr||"–")}</td></tr>`}),"");
+  const lt=s.banks.map(b=>b.kurs_czas).filter(Boolean).sort().pop();
+  $("lvtime").textContent=lt?("Poziomy z przebiegu: "+lt+(lt.slice(0,10)!==s.czas.slice(0,10)?" (nieaktualne – bot policzy nowe po otwarciu sesji)":"")):"Brak danych z bota.";
+  table("ord",["Spółka","Część","Ilość","Limit kupna","Wartość","Zysk (TP)","Stop","Wystawione"],
+    s.orders.map(o=>`<tr><td><b>${o.sym}</b></td><td>${o.part} <span class="mute">${esc(o.kind||"")}</span></td><td>${nf(o.qty,0)}</td><td><b>${nf(o.lmt)}</b></td>
+    <td>${zl(o.qty&&o.lmt?o.qty*o.lmt:null)}</td><td>${nf(o.tp)}</td><td>${nf(o.stop)}${o.stop_typ&&o.stop_typ!=="staly"?' <span class="mute">'+esc(o.stop_typ)+"</span>":""}</td><td class="left mute">${esc(o.czas||"–")}</td></tr>`),"Brak aktywnych zleceń kupna w dzisiejszym dzienniku.");
+  table("fills",["Czas","Spółka","Strona","Ilość","Cena","Prowizja","Wynik","Zlecenie"],
+    s.fills.map(f=>`<tr><td class="left">${f.time}</td><td><b>${f.sym}</b></td><td class="${f.side==="BUY"?"pos":"neg"}">${f.side==="BUY"?"kupno":"sprzedaż"}</td><td>${nf(f.qty,0)}</td><td>${nf(f.price)}</td>
+    <td>${nf(f.commission)}</td><td class="${sg(f.realized)}">${sgn(f.realized)}</td><td class="left mute">${esc(f.ref)}</td></tr>`),"Brak transakcji w dzienniku.");
+  table("ev",["Czas","Zdarzenie","Spółka","Szczegóły"],
+    s.events.map(e=>`<tr><td class="left">${e.czas}</td><td class="left">${esc(e.zdarzenie)}</td><td>${esc(e.spolka)}</td><td class="left mute">${esc(e.szczegoly)}</td></tr>`),"Brak zdarzeń.");
+}
+async function tick(){try{const r=await fetch("/api/state");render(await r.json())}catch(e){$("warn").textContent="Brak odpowiedzi serwera podglądu: "+e}}
+tick().then(()=>setTab(location.hash==="#logi"?"logi":"portfel"));setInterval(tick,10000);
+setInterval(()=>{if(!$("tab-logi").hidden)loadLog()},10000);
+</script></body></html>
