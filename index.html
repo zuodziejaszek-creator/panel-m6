@@ -1,0 +1,315 @@
+<!doctype html>
+<html lang="pl"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Ultron</title>
+<script>
+(function(){
+const ERR=/b[lł][aą]d|error|exception|traceback|alarm|zablok|nieudan|nie dzia|stop:|wylogowan|unrecognized/i;
+const enc=new TextEncoder();
+const b64=s=>Uint8Array.from(atob(s),c=>c.charCodeAt(0));
+let haslo=null,key=null,keySalt=null,bundle=null,bundleAt=0,formShown=false;
+let unlock;const ready=new Promise(r=>unlock=r);
+const COOKIE='panel_haslo',DNI=30;
+function czytajCookie(){
+  try{const m=document.cookie.match(new RegExp('(?:^|; )'+COOKIE+'=([^;]*)'));return m?decodeURIComponent(m[1]):null;}catch(e){return null;}
+}
+function zapiszCookie(v){
+  try{document.cookie=COOKIE+'='+encodeURIComponent(v)+'; max-age='+DNI*86400+'; path=/; SameSite=Strict'+(location.protocol==='https:'?'; Secure':'');}catch(e){}
+}
+function usunCookie(){
+  try{document.cookie=COOKIE+'=; max-age=0; path=/; SameSite=Strict'+(location.protocol==='https:'?'; Secure':'');}catch(e){}
+}
+// haslo w pamieci przegladarki (localStorage) - ciasteczko bylo wysylane do GitHuba przy kazdym zapytaniu
+const LS='panel_haslo';
+function zapiszHaslo(v){try{localStorage.setItem(LS,v);}catch(e){}usunCookie();}
+function usunHaslo(){try{localStorage.removeItem(LS);}catch(e){}usunCookie();}
+function czytajHaslo(){
+  try{const v=localStorage.getItem(LS);if(v)return v;}catch(e){}
+  const c=czytajCookie();
+  if(c)zapiszHaslo(c);
+  return c;
+}
+function formularz(blad){
+  const d=document.createElement('div');
+  d.style.cssText='position:fixed;inset:0;background:rgba(0,0,0,.55);display:flex;align-items:center;justify-content:center;z-index:99';
+  d.innerHTML='<form style="background:var(--card);color:var(--ink);padding:18px;border:1px solid var(--line);border-radius:10px;min-width:260px;font:14px system-ui"><div style="margin-bottom:8px">Hasło do panelu</div><input type="password" id="pw" autocomplete="current-password" style="width:100%;padding:6px;font:inherit"><label style="display:flex;gap:6px;align-items:center;margin-top:8px;font-size:13px"><input type="checkbox" id="zap" checked> zapamiętaj na tym urządzeniu</label><div id="pwerr" style="color:var(--neg);font-size:12px;margin-top:6px;min-height:14px">'+(blad||'')+'</div><button style="margin-top:8px;padding:6px 14px;font:inherit;cursor:pointer">Otwórz</button></form>';
+  document.body.appendChild(d);
+  d.querySelector('form').onsubmit=async e=>{
+    e.preventDefault();
+    haslo=d.querySelector('#pw').value;
+    try{
+      await odszyfruj();
+      if(d.querySelector('#zap').checked) zapiszHaslo(haslo); else usunHaslo();
+      d.remove();unlock();
+    }catch(x){d.querySelector('#pwerr').textContent='Złe hasło albo brak migawki';haslo=null;}
+  };
+}
+async function startowe(){
+  const zapisane=czytajHaslo();
+  if(zapisane){
+    haslo=zapisane;
+    try{await odszyfruj();unlock();return;}
+    catch(e){usunHaslo();haslo=null;}
+  }
+  formularz(zapisane?'Zapisane hasło nie pasuje - wpisz ponownie':'');
+}
+async function odszyfruj(){
+  const r=await fetch('migawka.json?t='+Date.now(),{cache:'no-store'});
+  if(!r.ok) throw new Error('brak migawki');
+  const m=await r.json();
+  let k=key;
+  if(!k||keySalt!==m.salt){
+    const base=await crypto.subtle.importKey('raw',enc.encode(haslo),'PBKDF2',false,['deriveKey']);
+    k=await crypto.subtle.deriveKey({name:'PBKDF2',salt:b64(m.salt),iterations:m.it,hash:'SHA-256'},base,{name:'AES-GCM',length:256},false,['decrypt']);
+  }
+  const pt=await crypto.subtle.decrypt({name:'AES-GCM',iv:b64(m.iv)},k,b64(m.ct));
+  const txt=m.z==='gzip'?await new Response(new Blob([pt]).stream().pipeThrough(new DecompressionStream('gzip'))).text()
+                        :new TextDecoder().decode(pt);
+  bundle=JSON.parse(txt);
+  key=k;keySalt=m.salt;bundleAt=Date.now();
+}
+const reply=o=>new Response(JSON.stringify(o),{headers:{'Content-Type':'application/json; charset=utf-8'}});
+const origFetch=window.fetch.bind(window);
+window.fetch=async function(url,opts){
+  const u=new URL(String(url),location.href);
+  if(!u.pathname.startsWith('/api/')) return origFetch(url,opts);
+  if(!bundle){
+    if(!formShown){formShown=true;startowe();}
+    await ready;
+  }else if(Date.now()-bundleAt>60000){
+    try{await odszyfruj();}catch(e){}
+  }
+  if(u.pathname==='/api/state') return reply(bundle.state);
+  if(u.pathname==='/api/log'){
+    const src=u.searchParams.get('src')||'dziennik';
+    const L=bundle.logs[src];
+    if(!L) return reply({error:'nieznane źródło logu'});
+    if(L.error) return reply(L);
+    let lines=L.lines||[];
+    const q=(u.searchParams.get('q')||'').toLowerCase();
+    if(q) lines=lines.filter(l=>l.toLowerCase().includes(q));
+    if(u.searchParams.get('err')==='1') lines=lines.filter(l=>ERR.test(l));
+    const n=parseInt(u.searchParams.get('n')||'200',10)||200;
+    return reply({...L,lines:lines.slice(-n),razem:lines.length});
+  }
+  return reply({error:'nie ma'});
+};
+})();
+</script>
+<style>
+:root{--bg:#f6f7f9;--card:#fff;--ink:#14181f;--mute:#667085;--line:#e3e6eb;--pos:#0a7d3c;--neg:#c0322b;--acc:#2456d6;--warn:#a36200;--chip:#eef1f6;--pur:#8a4fd1}
+@media (prefers-color-scheme:dark){:root:not([data-theme=light]){--bg:#0f1218;--card:#171b23;--ink:#e8ebf0;--mute:#8f98a8;--line:#272d38;--pos:#3ecf74;--neg:#ff6b61;--acc:#7aa2ff;--warn:#f0b24a;--chip:#212733;--pur:#b58cf0}}
+*{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--ink);font:14px/1.45 system-ui,Segoe UI,Roboto,sans-serif}
+main{max-width:1360px;margin:0 auto;padding:16px}
+header{display:flex;flex-wrap:wrap;gap:8px 16px;align-items:center;justify-content:space-between;margin-bottom:14px}
+h1{font-size:20px;margin:0}h2{font-size:15px;margin:22px 0 8px}
+.pill{display:inline-flex;gap:6px;align-items:center;padding:3px 10px;border-radius:99px;background:var(--chip);font-size:12.5px}
+.dot{width:8px;height:8px;border-radius:50%;background:var(--mute)}.ok .dot{background:var(--pos)}.bad .dot{background:var(--neg)}
+.tiles{display:grid;grid-template-columns:repeat(auto-fit,minmax(170px,1fr));gap:10px}
+.tile{background:var(--card);border:1px solid var(--line);border-radius:10px;padding:12px 14px}
+.tile .l{color:var(--mute);font-size:12px}.tile .v{font-size:21px;font-weight:650;margin-top:2px;font-variant-numeric:tabular-nums}.tile .s{font-size:12px;color:var(--mute)}
+.card{background:var(--card);border:1px solid var(--line);border-radius:10px;overflow:auto}
+table{border-collapse:collapse;width:100%;min-width:640px}th,td{padding:7px 10px;text-align:right;border-bottom:1px solid var(--line);white-space:nowrap;font-variant-numeric:tabular-nums}
+th{font-size:11.5px;color:var(--mute);font-weight:600;text-transform:uppercase;letter-spacing:.03em}
+th:first-child,td:first-child{text-align:left}tr:last-child td{border-bottom:0}
+.pos{color:var(--pos)}.neg{color:var(--neg)}.mute{color:var(--mute)}.warn{color:var(--warn)}
+.tag{display:inline-block;padding:1px 8px;border-radius:99px;background:var(--chip);font-size:12px}
+.tag.g{color:var(--pos)}.tag.b{color:var(--acc)}.tag.w{color:var(--warn)}
+.note{color:var(--mute);font-size:12.5px;margin:6px 2px}
+.left{text-align:left!important;white-space:normal}
+.two{display:grid;grid-template-columns:repeat(auto-fit,minmax(300px,1fr));gap:10px}
+.box{background:var(--card);border:1px solid var(--line);border-radius:10px;padding:12px 14px}
+.box h3{margin:0 0 6px;font-size:14px;display:flex;gap:8px;align-items:center;justify-content:space-between}
+.kv{display:grid;grid-template-columns:auto 1fr;gap:3px 12px;font-size:13px}.kv span:nth-child(odd){color:var(--mute)}.kv span:nth-child(even){text-align:right}
+.tag.r{color:var(--neg)}
+.tabs{display:flex;gap:6px;margin:0 0 12px}.tabs button,.seg button{font:inherit;color:var(--ink);background:var(--card);border:1px solid var(--line);padding:6px 14px;border-radius:8px;cursor:pointer}
+.tabs button.on,.seg button.on{background:var(--acc);border-color:var(--acc);color:#fff}
+.toolbar{display:flex;flex-wrap:wrap;gap:8px 18px;margin-bottom:10px}.seg{display:flex;flex-wrap:wrap;gap:4px}.seg button{padding:5px 11px;font-size:13px}
+.logbox{margin:0;padding:10px 12px;max-height:520px;overflow:auto;font:12px/1.5 ui-monospace,Consolas,monospace;white-space:pre-wrap;word-break:break-word}
+.logbox .l{display:block;padding:0 2px;border-radius:3px}.logbox .e{color:var(--neg)}.logbox .w{color:var(--warn)}
+.inp{font:inherit;color:var(--ink);background:var(--card);border:1px solid var(--line);border-radius:8px;padding:5px 9px;font-size:13px}.chk{display:inline-flex;align-items:center;gap:6px;font-size:13px}
+.kv3{display:grid;grid-template-columns:minmax(150px,1.6fr) 1fr 1fr;gap:3px 12px;font-size:12.5px}.kv3 span:nth-child(3n+1){color:var(--mute)}.kv3 span:nth-child(3n+2),.kv3 span:nth-child(3n){text-align:right}
+@media(max-width:560px){main{padding:12px}.tile .v{font-size:18px}}
+</style></head><body><main>
+<header><h1>Ultron v3 <span class="mute" style="font-weight:400;font-size:14px">IBKR LIVE <span id="wariant"></span></span></h1>
+<div style="display:flex;gap:8px;flex-wrap:wrap"><span id="gw" class="pill"><i class="dot"></i><span>wczytywanie…</span></span><span id="upd" class="pill">–</span></div></header>
+<nav class="tabs"><button id="btn-portfel" onclick="setTab('portfel')">Portfel</button><button id="btn-logi" onclick="setTab('logi')">Statusy i logi</button></nav>
+<div id="warn" class="note warn"></div>
+<div id="tab-portfel">
+<div class="tiles" id="tiles"></div>
+<h2>Pozycje</h2><div class="card"><table id="pos"></table></div>
+<h2>8 banków: wymagane poziomy kupna</h2><div class="card"><table id="banks"></table></div>
+<div class="note"><span id="stratnote"></span> „Do poziomu" = ile kurs na żywo musi jeszcze spaść (poziom kupna ÷ kurs − 1). <b>Kurs</b> = środek spreadu bid/ask z tików IBKR zapisywanych przez bota (wiersz przy każdej zmianie notowania, ok. 1 s); gdy tików brak, zamknięcie ostatniej świecy 5 min z przebiegu bota (oznaczone „5m"). Najechanie na kurs pokazuje bid/ask/ostatnią transakcję i liczbę wg świecy 5 min. <b>Od otwarcia</b> = kurs ÷ otwarcie pierwszej świecy 5 min dzisiejszej sesji (9:00) − 1; <b>od zamknięcia</b> = ÷ zamknięcie poprzedniej sesji − 1. <b>Poziomy</b> liczy bot co 5 min (dane IBKR na żywo, od 05.11.2026); między przebiegami co ok. 2 s przenosi zlecenie na bank najbliżej poziomu. <b id="lvtime"></b></div>
+<h2>Zlecenia kupna</h2><div class="card"><table id="ord"></table></div>
+<div class="note">Odtworzone z dzisiejszych wpisów dziennika bota (wystawienia, anulowania, wypełnienia). Każde kupno ma dołączone zlecenia TP i stop, które ruszają po wypełnieniu kupna.</div>
+<h2>Transakcje</h2><div class="card"><table id="fills"></table></div>
+<h2>Porównanie strategii (model, silnik 1m)</h2><div class="card"><table>
+<thead><tr><th>Strategia</th><th>Wypełnienia</th><th>oc</th><th>2017–22 zysk/rok</th><th>DD</th><th>Sharpe</th><th>2023+ zysk/rok</th><th>DD</th><th>Sharpe</th><th>6 040 zł po 3,79 r.</th></tr></thead><tbody>
+<tr><td>Jarvis (M6)</td><td>limit</td><td>–</td><td>24,4%</td><td class="neg">−28,2%</td><td>1,09</td><td>38,3%</td><td class="neg">−16,4%</td><td>1,64</td><td>20 838 zł</td></tr>
+<tr><td>Ultron v1</td><td>limit</td><td>12,4</td><td>40,3%</td><td class="neg">−33,3%</td><td>1,78</td><td>42,9%</td><td class="neg">−14,5%</td><td>1,92</td><td>23 133 zł</td></tr>
+<tr><td>Ultron v2 (5ce740)</td><td>limit</td><td>19,8</td><td>38,0%</td><td class="neg">−25,1%</td><td>1,82</td><td>45,5%</td><td class="neg">−11,5%</td><td>2,15</td><td>25 791 zł</td></tr>
+<tr><td><b>Ultron v3 (3e757f, LIVE)</b></td><td>limit</td><td><b>49,7</b></td><td>51,2%</td><td class="neg">−10,0%</td><td>2,52</td><td>48,2%</td><td class="neg">−10,8%</td><td>2,23</td><td><b>26 938 zł</b></td></tr>
+<tr><td>Jarvis (M6)</td><td>dotyk</td><td>15,0</td><td>41,3%</td><td class="neg">−36,8%</td><td>1,54</td><td>64,0%</td><td class="neg">−13,5%</td><td>2,37</td><td>39 985 zł</td></tr>
+<tr><td>Ultron v1</td><td>dotyk</td><td>39,5</td><td>59,7%</td><td class="neg">−19,6%</td><td>2,40</td><td>69,3%</td><td class="neg">−11,3%</td><td>2,74</td><td>43 005 zł</td></tr>
+<tr><td>Ultron v2 (5ce740)</td><td>dotyk</td><td>45,5</td><td>60,8%</td><td class="neg">−16,5%</td><td>2,51</td><td>64,1%</td><td class="neg">−11,3%</td><td>2,62</td><td>40 830 zł</td></tr>
+<tr><td><b>Ultron v3 (3e757f, LIVE)</b></td><td>dotyk</td><td><b>67,6</b></td><td>67,0%</td><td class="neg">−10,0%</td><td>3,07</td><td>68,1%</td><td class="neg">−9,7%</td><td>2,85</td><td><b>42 884 zł</b></td></tr>
+</tbody></table></div>
+<div class="note">Wyniki MODELU (silnik 1m, wskaźniki na świecach 5m IBKR, zdarzenia co minutę), policzone 13.11.2026; to górna granica, do planowania rozsądna jest połowa zysku. „Wypełnienia": <b>limit</b> = wejście i TP po przebiciu poziomu o pół spreadu (konserwatywnie), <b>dotyk</b> = limity wypełniają się przy dotknięciu, sprzedaże rynkowe płacą spread. Ostatnia kolumna = kapitał z 6 040 zł po 3,79 roku (2.01.2023–16.10.2026) z reinwestycją, bez limitu pojemności. Prawdziwe transakcje: Jarvis 2 (+33,18 zł), Ultron v1 i v2: 0. Ultron v3 (kandydat 3e757f, filtr B_SEC12 w bocie D, próg „blisko TP" 0,469%) działa od 13.11.2026 15:15.</div>
+</div>
+<div id="tab-logi" hidden>
+<h2>Statusy procesów</h2><div class="card"><table id="procs"></table></div>
+<h2>Bot, nadzór i kontrola zleceń</h2><div class="two" id="sys"></div>
+<div class="card" style="margin-top:10px"><table id="kont"></table></div>
+<h2>Logi</h2>
+<div class="toolbar"><div id="logsrc" class="seg"></div>
+<div class="seg"><label class="chk"><input type="checkbox" id="logerr"> tylko błędy / alarmy</label><input id="logq" class="inp" placeholder="szukaj w logu…"><select id="logn" class="inp"><option>100</option><option selected>200</option><option>500</option><option>1000</option></select></div></div>
+<div class="card"><pre id="logbox" class="logbox"></pre></div><div id="logmeta" class="note"></div>
+<h2>Ostatnie zdarzenia bota</h2><div class="card"><table id="ev"></table></div>
+</div>
+</main>
+<script>
+const $=id=>document.getElementById(id);
+const esc=s=>String(s??"").replace(/[&<>"]/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[c]));
+const nf=(v,d=2)=>v==null||isNaN(v)?"–":Number(v).toLocaleString("pl-PL",{minimumFractionDigits:d,maximumFractionDigits:d});
+const zl=v=>v==null?"–":nf(v,2)+" zł";
+const sg=v=>v==null||isNaN(v)?"mute":(v>0?"pos":(v<0?"neg":"mute"));
+const sgn=(v,d=2,suf="")=>v==null||isNaN(v)?"–":(v>0?"+":"")+nf(v,d)+suf;
+const tile=(l,v,s,cls="")=>`<div class="tile"><div class="l">${l}</div><div class="v ${cls}">${v}</div><div class="s">${s||""}</div></div>`;
+const table=(el,head,rows,empty)=>{$(el).innerHTML="<thead><tr>"+head.map(h=>`<th>${h}</th>`).join("")+"</tr></thead><tbody>"+(rows.length?rows.join(""):`<tr><td colspan="${head.length}" class="left mute">${empty}</td></tr>`)+"</tbody>"};
+let LAST=null;
+function setTab(t){["portfel","logi"].forEach(n=>{$("tab-"+n).hidden=n!==t;$("btn-"+n).classList.toggle("on",n===t)});
+  try{history.replaceState(null,"","#"+t)}catch(e){} if(t==="logi"){initLogs();loadLog()}}
+const LOGSRC={dziennik:"Dziennik bota",konsola:"Konsola bota",nadzor:"Nadzór",ibc:"Gateway (IBC)",xtb:"Bot XTB",xtb_nadzor:"Nadzór XTB"};let LOGCUR="dziennik",LOGINIT=false,LOGT=null;
+function initLogs(){
+  if(LOGINIT)return;LOGINIT=true;
+  $("logsrc").innerHTML=Object.keys(LOGSRC).map(k=>`<button data-k="${k}">${LOGSRC[k]}</button>`).join("");
+  $("logsrc").onclick=e=>{const k=e.target.dataset.k;if(k){LOGCUR=k;markLog();loadLog(true)}};
+  $("logerr").onchange=()=>loadLog(true);$("logn").onchange=()=>loadLog(true);
+  $("logq").oninput=()=>{clearTimeout(LOGT);LOGT=setTimeout(()=>loadLog(true),350)};markLog();
+}
+function markLog(){document.querySelectorAll("#logsrc button").forEach(b=>b.classList.toggle("on",b.dataset.k===LOGCUR))}
+async function loadLog(jump){
+  if($("tab-logi").hidden)return;const box=$("logbox"),atEnd=jump||box.scrollHeight-box.scrollTop-box.clientHeight<40;
+  const qs=`src=${LOGCUR}&n=${$("logn").value}&q=${encodeURIComponent($("logq").value)}&err=${$("logerr").checked?1:0}`;
+  try{const d=await(await fetch("/api/log?"+qs)).json();
+    if(d.error){box.textContent="";$("logmeta").textContent=(d.name?d.name+": ":"")+d.error;return}
+    box.innerHTML=d.lines.length?d.lines.map(l=>`<span class="l ${/b[lł][aą]d|error|exception|traceback|alarm|zablok|nieudan|unrecognized/i.test(l)?"e":/uwaga|warn|stare|brak/i.test(l)?"w":""}">${esc(l)}</span>`).join(""):'<span class="mute">Brak pasujących wpisów.</span>';
+    $("logmeta").textContent=`${d.name} · ${d.lines.length} z ${d.razem} wierszy · plik ${d.plik} · zmieniony ${d.mtime}`;
+    if(atEnd)box.scrollTop=box.scrollHeight;
+  }catch(e){$("logmeta").textContent="Błąd pobierania logu: "+e}}
+const REZ_NAZWA={D:"Dynamika (D)",S:"Spokój (S)"};
+const prc=x=>x==null?"–":nf(x*100,3)+"%",n5=x=>x==null?"–":nf(x,5);
+function rezTile(s){
+  const r=s.rezim,c=s.strategia;
+  if(!r||!r.rez)return tile("Bot dnia (flaga zmienności)","–","brak pliku flagi (bot zapisuje ją o 8:40)");
+  const sub=`wskaźnik ${nf(Number(r.wskaznik),3)}% · progi ${nf(Number(r.prog_dolny),3)}% / ${nf(Number(r.prog_gorny),3)}%`+(c?` · okno ${c.okno} d, ${Math.round(c.prog*100)}/${Math.round((1-c.prog)*100)}`:"")+(r.ostatnia_sesja?` · dane do ${r.ostatnia_sesja.slice(8)}.${r.ostatnia_sesja.slice(5,7)}`:"")+(r.aktualny?"":` · STARA FLAGA z ${r.dzien}`);
+  return tile("Bot dnia (flaga zmienności)",REZ_NAZWA[r.rez]||esc(r.rez),sub,r.aktualny?"":"warn");
+}
+function stratNote(s){
+  const c=s.strategia;
+  if(!c)return "Ultron v3: dwa boty (S spokój / D dynamika) wybierane dzienną flagą zmienności; parametry w pliku bota.";
+  const k=(s.rezim&&s.rezim.rez)||"S",P=c[k];
+  return `<b>Ultron v3</b> (kandydat ${esc(c.kandydat||"?")}): codziennie handluje jeden z dwóch botów wg flagi zmienności (średni dzienny zakres 8 banków z ${c.okno} dni vs percentyle ${Math.round(c.prog*100)}/${Math.round((1-c.prog)*100)} z 500 dni, znana przed sesją). Dziś: <b>${REZ_NAZWA[k]}</b>. `+
+   `Poziom kupna = wyższy z dwóch: B (szczyt 2 h − (${n5(P.B_DROP_ATR)} × ATR − ${n5(P.B_BETA)} × spadek sektora); bez B, gdy spada głównie sektor) lub VWAP − (${prc(P.VWAP_DROP)} − ${n5(P.V_BETA)} × spadek sektora), bez warunku odbicia. `+
+   `TP B = ${n5(P.B_TP_ATR)} × ATR${P.B_TP_RV?" × rv^"+n5(P.B_TP_RV):""}, TP VWAP +${prc(P.VWAP_TP)}; stop B ${prc(P.B_SL)} podnoszony za szczytem (${prc(P.B_TRAIL)}) po +${prc(P.B_TRAIL_ACT)}, stop VWAP 8%. `+
+   `Wyjścia w czasie: B sprzedawane po rynku po 48 świecach${P.B_HOLD?", TP B obniżany ×"+n5(P.B_TP2_X)+" po "+P.B_HOLD+" świecach":""}; TP części A obniżany ×${n5(P.V_TP2_X)} po 48 świecach. Pozycja zachowuje wyjścia bota z dnia wejścia.`;
+}
+function stratBox(s){
+  const c=s.strategia;if(!c)return "";
+  const S=c.S,D=c.D,act=(s.rezim&&s.rezim.rez)||"";
+  const rows=[["spadek B (m × ATR)",n5(S.B_DROP_ATR),n5(D.B_DROP_ATR)],["TP B (k × ATR)",n5(S.B_TP_ATR),n5(D.B_TP_ATR)],["stop początkowy B",prc(S.B_SL),prc(D.B_SL)],
+    ["stop ruchomy: odległość / próg",prc(S.B_TRAIL)+" / +"+prc(S.B_TRAIL_ACT),prc(D.B_TRAIL)+" / +"+prc(D.B_TRAIL_ACT)],
+    ["TP × po spadku banku w sesji (próg)","×"+n5(S.B_TP_DOWN_X)+" ("+prc(-S.B_TP_DOWN)+")","×"+n5(D.B_TP_DOWN_X)+" ("+prc(-D.B_TP_DOWN)+")"],
+    ["TP × lepsze warunki",n5(S.B_TP_GOOD),n5(D.B_TP_GOOD)],["β sektora B / V",n5(S.B_BETA)+" / "+n5(S.V_BETA),n5(D.B_BETA)+" / "+n5(D.V_BETA)],
+    ["B tylko gdy sektor > −r·m·ATR, r",n5(S.B_SECDD_RATIO),n5(D.B_SECDD_RATIO)],["VWAP: spadek / TP",prc(S.VWAP_DROP)+" / "+prc(S.VWAP_TP),prc(D.VWAP_DROP)+" / "+prc(D.VWAP_TP)],
+    ["VWAP: TP po 48 świecach ×",n5(S.V_TP2_X),n5(D.V_TP2_X)],["TP B × rv^a","–",D.B_TP_RV==null?"–":n5(D.B_TP_RV)],["TP B po 6 świecach ×","–",D.B_TP2_X==null?"–":n5(D.B_TP2_X)]];
+  return `<div class="box" style="grid-column:1/-1"><h3>Strategia: Ultron v3 · okno ${c.okno} d, progi ${Math.round(c.prog*100)}/${Math.round((1-c.prog)*100)} (górny/dolny) · kandydat ${esc(c.kandydat||"?")}</h3>`+
+   `<div class="kv3"><span></span><span><b class="${act==="S"?"pos":""}">Spokój (S)</b></span><span><b class="${act==="D"?"pos":""}">Dynamika (D)</b></span>`+rows.map(r=>`<span>${r[0]}</span><span>${r[1]}</span><span>${r[2]}</span>`).join("")+`</div>`+
+   `<div class="note">Parametry czytane na żywo z pliku bota. Wspólne: szczyt 24 świec 5 min, stop VWAP 8%, sprzedaż B po 48 świecach, TP min. 0,2%; pozycja 98% kapitału (maks. 99% w banku), ×1,74771 w lepszych warunkach, ×0,5 przy słabym rynku, zamiana po 3 sesjach.</div></div>`;
+}
+function dodBox(s,kv){
+  const d=s.dodatkowy;if(!d)return "";
+  const tag=d.dziala?'<span class="tag g">działa</span>':'<span class="tag r">NIE DZIAŁA / zakończony</span>';
+  return `<div class="box" style="grid-column:1/-1"><h3>Nadzór dodatkowy (pierwsze godziny testu v2) ${tag}</h3>`+
+   kv([["Alarmy / uwagi",`<span class="${d.alarmy?"neg":"pos"}">${d.alarmy}</span> / <span class="${d.uwagi?"warn":"mute"}">${d.uwagi}</span>`],["Ostatni wpis",esc(d.mtime)]])+
+   (d.ostatni_stan?`<div class="note left">${esc(d.ostatni_stan)}</div>`:"")+
+   `<div class="note left" style="line-height:1.6">${d.ostatnie.map(esc).join("<br>")}</div></div>`;
+}
+function dzisTile(a){
+  const d=a.dzis,rd="zrealizowany dziś "+sgn(a.realized_today,2," zł");
+  if(!d)return tile("Konto: od otwarcia sesji","–","brak danych (kurs otwarcia / spójność dziennika) · "+rd);
+  return tile("Konto: od otwarcia sesji",sgn(d.zl,2," zł"),(d.pct==null?"":sgn(d.pct,2,"% wartości na otwarciu")+" · ")+"start "+zl(d.start)+" · "+rd,sg(d.zl));
+}
+function bankiTile(s,st){
+  const av=k=>{const v=s.banks.map(b=>b[k]).filter(x=>x!=null);return v.length?v.reduce((x,y)=>x+y,0)/v.length:null},o=av("od_otwarcia_pct");
+  return tile("Banki: od otwarcia sesji",sgn(o,2,"%"),"średnia 8 banków, kurs na żywo · od zamknięcia wczoraj "+sgn(av("od_zamkniecia_pct"),2,"%")+" · 1 h (bot): "+(st.banki_1h||"–"),sg(o));
+}
+function render(s){
+  LAST=s;
+  const z=s.zrodlo,a=s.account,d=new Date(),wSesji=d.getDay()>0&&d.getDay()<6&&(d.getHours()*60+d.getMinutes())>=548&&d.getHours()<17,stare=z.wiek_s==null||(wSesji&&z.wiek_s>600);
+  $("gw").className="pill "+(stare?"bad":"ok");
+  $("gw").lastChild.textContent="Dziennik bota"+(z.konto?" · "+z.konto:"");
+  $("upd").textContent="odświeżono "+s.czas.slice(11)+(z.ostatni_wpis?" · ostatni wpis bota "+z.ostatni_wpis.slice(5):"");
+  $("warn").textContent=z.wiek_s==null?"Brak dziennika bota.":stare?`Bot nic nie zapisał od ${Math.round(z.wiek_s/60)} min (ostatni wpis ${z.ostatni_wpis}).`:"";
+  const st=s.bot.stan||{}, r1=s.bot.regula_1||{}, bl=s.bot.blokady||{};
+  $("tiles").innerHTML=
+    tile("Kapitał bota",zl(s.budget==null?null:s.budget+a.unrealized),"budżet "+zl(s.budget)+" + niezrealizowany (zrealizowany zysk jest już w budżecie)")+
+    tile("Budżet bota",zl(s.budget),"zainwestowane "+zl(a.invested)+" · wolne "+zl(a.free_bot))+
+    tile("Zysk razem",sgn(a.total,2," zł"),a.total_pct==null?"":sgn(a.total_pct,2,"% kapitału startowego ("+zl(a.start)+")"),sg(a.total))+
+    tile("Niezrealizowany",sgn(a.unrealized,2," zł"),"otwarte pozycje (kurs na żywo z tików)",sg(a.unrealized))+
+    tile("Zrealizowany",sgn(a.realized,2," zł"),"dziś "+sgn(a.realized_today,2," zł")+" · po prowizjach",sg(a.realized))+
+    dzisTile(a)+
+    bankiTile(s,st)+
+    tile("Rynek (SMA200)",esc((s.bot.waga_rynek||{}).stan||"–"),"indeks 8 banków vs SMA200: "+esc((s.bot.waga_rynek||{}).indeks_vs_SMA200||"–")+" · przy słabym rynku nowe pozycje ×0,5")+
+    tile("Reguły ochronne",esc(r1.stan||"–"),"SMA175 "+esc(r1.SMA175||"–")+" · RSI14 "+esc(r1.RSI14||"–")+" · blokady: "+esc(bl.zablokowane||"–"));
+  $("tiles").innerHTML+=rezTile(s);
+  $("stratnote").innerHTML=stratNote(s);
+  $("wariant").textContent=s.strategia?`· v3 okno ${s.strategia.okno} d, ${Math.round(s.strategia.prog*100)}/${Math.round((1-s.strategia.prog)*100)}`:"";
+  table("procs",["Proces","Status","PID","Uruchomiony","Ostatnia aktywność","Źródło"],
+    s.procesy.map(p=>`<tr><td class="left"><b>${esc(p.nazwa)}</b></td><td class="left">${p.dziala?'<span class="tag g">działa</span>':'<span class="tag r">NIE DZIAŁA</span>'}</td>
+    <td>${p.pid??"–"}</td><td>${esc(p.od||"–")}</td><td>${esc(p.aktywnosc)}</td><td class="left mute">${esc(p.zrodlo)}</td></tr>`),"");
+  const bp=s.bot.proces, nz=s.nadzor, k=s.kontrola;
+  const alive=p=>p?`<span class="tag g">działa</span> <span class="mute">pid ${p.pid} od ${p.od}</span>`:'<span class="tag r">NIE DZIAŁA</span>';
+  const kv=a=>'<div class="kv">'+a.map(([l,v])=>`<span>${l}</span><span>${v}</span>`).join("")+"</div>";
+  const nzStale=nz.ostatnie_sprawdzenie&&nz.ostatnie_sprawdzenie.slice(0,10)!==s.czas.slice(0,10);
+  const nzTag=nzStale?'<span class="tag w">stare: '+esc(nz.wynik||"–")+" (od startu brak sprawdzeń)</span>":nz.wynik==="OK"?'<span class="tag g">OK</span>':nz.wynik==="ALARM"?'<span class="tag r">ALARM</span>':'<span class="tag">'+esc(nz.wynik||"brak")+"</span>";
+  $("sys").innerHTML=
+   `<div class="box"><h3>Bot IBKR LIVE ${alive(bp)}</h3>`+kv([["Ostatni wpis w dzienniku",esc(s.bot.ostatni_wpis||"–")],["Budżet",zl(s.budget)],["Konto",esc(z.konto||"–")],["Ostatni stan",esc(z.stan_czas||"–")]])+`</div>`+
+   `<div class="box"><h3>Nadzór ${alive(nz.proces)}</h3>`+kv([["Ostatnie sprawdzenie",esc(nz.ostatnie_sprawdzenie||"–")+" "+nzTag],["Start (z logu)",esc(nz.start_log||"–")],["Ostatni raport",nz.raport?esc(nz.raport.nazwa)+" · "+nz.raport.czas:"–"]])+
+     (nz.alarmy.length&&!nzStale?'<div class="note neg left">'+nz.alarmy.map(a=>"• "+esc(a)).join("<br>")+"</div>":"")+`<div class="note">${esc(nz.harmonogram)}</div></div>`+
+   `<div class="box"><h3>Kontrola zleceń <span class="tag b">AI: ${esc(k.tryb_ai)}</span></h3>`+kv([["Ostatni dzień z kontrolą",esc(k.dzien||"–")],["Sprawdzone zlecenia",k.sprawdzone],["Wysłane / zablokowane",`<span class="pos">${k.wyslane}</span> / <span class="${k.zablokowane?"neg":"mute"}">${k.zablokowane}</span>`],["Blokady zasad (kod)",k.blokady_zasad],["AI niedostępna",k.ai_niedostepna],["Model",esc(k.model)]])+
+     (k.ostatnia_blokada?`<div class="note warn left">Ostatnia blokada ${esc(k.ostatnia_blokada.czas)} ${esc(k.ostatnia_blokada.sym)}: ${esc(k.ostatnia_blokada.powod)}</div>`:"")+`</div>`+
+   stratBox(s)+dodBox(s,kv);
+  table("kont",["Czas","Spółka","Część","Typ","Limit","Ilość","Zasady","Ocena AI","Decyzja"],
+    k.ostatnie.map(r=>`<tr><td class="left">${r.czas}</td><td><b>${esc(r.sym)}</b></td><td>${esc(r.czesc)}</td><td>${esc(r.typ)}</td><td>${esc(r.limit)}</td><td>${esc(r.ilosc)}</td>
+    <td class="${r.zasady==="OK"?"pos":"neg"}">${esc(r.zasady)}</td><td class="left mute" title="${esc(r.ai)}">${esc(r.ai.slice(0,70))}${r.ai.length>70?"…":""}</td>
+    <td>${r.decyzja?`<span class="tag ${r.decyzja==="WYSLANE"?"g":"r"}">${r.decyzja==="WYSLANE"?"wysłane":"zablokowane"}</span>`:"–"}</td></tr>`),"Brak wpisów kontroli w dzienniku.");
+  table("pos",["Spółka","Ilość","Cena kupna","Kurs","Wartość","Zysk zł","Zysk %","Zysk (TP)","Stop","Kupiono","Sesje","Bot"],
+    s.positions.map(p=>`<tr><td><b>${p.sym}</b></td><td>${nf(p.qty,0)}</td><td>${nf(p.avg)}</td><td>${nf(p.price)}</td><td>${zl(p.value)}</td>
+    <td class="${sg(p.pnl)}">${sgn(p.pnl)}</td><td class="${sg(p.pnl_pct)}">${sgn(p.pnl_pct,2,"%")}</td><td>${nf(p.tp)}</td>
+    <td>${nf(p.stop)}${p.stop_typ&&p.stop_typ!=="staly"?' <span class="mute">'+esc(p.stop_typ)+"</span>":""}</td><td>${p.bought||"–"}</td><td>${p.sessions??"–"}</td><td>${esc(p.rez||"–")}</td></tr>`),"Brak otwartych pozycji.");
+  table("banks",["Spółka","Status","Kurs","Od otwarcia","Od zamknięcia","Poziom kupna","Do poziomu","Ilość","B: szczyt 2 h","VWAP / poziom","TP","ATR 1h","Sektor 2 h"],
+    s.banks.map(b=>{
+      const st=b.has_position?'<span class="tag g">pozycja</span>':b.buy_order?`<span class="tag b">zlecenie @ ${nf(b.buy_order.price)}</span>`:'<span class="tag w">brak zlecenia</span>';
+      const B=b.B||{},A=b.A||{},kp=b.kurs_live??b.kurs;
+      const tip=`źródło: ${b.kurs_zrodlo==="tik"?"tik na żywo (środek bid/ask), ostatnia zmiana notowania "+(b.kurs_live_czas||"–").slice(11,19):"zamknięcie świecy 5 min z przebiegu bota "+(b.kurs_live_czas||"–").slice(11,16)} · bid ${nf(b.bid)} · ask ${nf(b.ask)} · ostatnia transakcja ${nf(b.last)} · zamknięcie świecy 5 min ${nf(b.kurs)} (${(b.kurs_czas||"–").slice(11,16)}) · otwarcie ${nf(b.otwarcie)} · zamknięcie wczoraj ${nf(b.zamkniecie_wczoraj)} · Do poziomu wg świecy 5 min: ${sgn(b.dist_pct_5m,2,"%")}`;
+      return `<tr><td><b>${b.sym}</b></td><td class="left" style="white-space:nowrap">${st}</td><td title="${tip}">${nf(kp)}${b.kurs_zrodlo==="tik"?"":' <span class="warn">5m</span>'}</td>
+      <td class="${sg(b.od_otwarcia_pct)}">${sgn(b.od_otwarcia_pct,2,"%")}</td><td class="${sg(b.od_zamkniecia_pct)}">${sgn(b.od_zamkniecia_pct,2,"%")}</td>
+      <td><b>${nf(b.level)}</b> <span class="mute">${b.level_part||""}</span></td>
+      <td class="${sg(b.dist_pct)}">${sgn(b.dist_pct,2,"%")}</td><td>${b.qty??"–"}</td><td>${nf(B.szczyt)}</td>
+      <td>${nf(B.vwap||A.vwap)} / ${nf(A.poziom)}</td><td>${esc(B.tp||A.tp||"–")}</td><td>${esc(b.atr||"–")}</td><td>${esc(B.sektor||A.sektor||"–")}</td></tr>`}),"");
+  const lt=s.banks.map(b=>b.kurs_czas).filter(Boolean).sort().pop();
+  $("lvtime").textContent=(lt?("Poziomy z przebiegu: "+lt+(lt.slice(0,10)!==s.czas.slice(0,10)?" (nieaktualne – bot policzy nowe po otwarciu sesji)":"")+"."):"Brak danych z bota.")+
+    (z.tiki_zywe?" Kurs na żywo: tiki IBKR, najświeższy sprzed "+Math.round(z.tik_wiek_s)+" s.":" Brak świeżych tików (poza sesją albo bot nie zapisuje) – kurs z ostatniej świecy 5 min.");
+  table("ord",["Spółka","Część","Bot","Ilość","Limit kupna","Wartość","Zysk (TP)","Stop","Wystawione"],
+    s.orders.map(o=>`<tr><td><b>${o.sym}</b></td><td>${o.part} <span class="mute">${esc(o.kind||"")}</span></td><td>${esc(o.rez||"–")}</td><td>${nf(o.qty,0)}</td><td><b>${nf(o.lmt)}</b></td>
+    <td>${zl(o.qty&&o.lmt?o.qty*o.lmt:null)}</td><td>${nf(o.tp)}</td><td>${nf(o.stop)}${o.stop_typ&&o.stop_typ!=="staly"?' <span class="mute">'+esc(o.stop_typ)+"</span>":""}</td><td class="left mute">${esc(o.czas||"–")}</td></tr>`),"Brak aktywnych zleceń kupna w dzisiejszym dzienniku.");
+  table("fills",["Czas","Spółka","Strona","Ilość","Cena","Prowizja","Wynik","Zlecenie"],
+    s.fills.map(f=>`<tr><td class="left">${f.time}</td><td><b>${f.sym}</b></td><td class="${f.side==="BUY"?"pos":"neg"}">${f.side==="BUY"?"kupno":"sprzedaż"}</td><td>${nf(f.qty,0)}</td><td>${nf(f.price)}</td>
+    <td>${nf(f.commission)}</td><td class="${sg(f.realized)}">${sgn(f.realized)}</td><td class="left mute">${esc(f.ref)}</td></tr>`),"Brak transakcji w dzienniku.");
+  table("ev",["Czas","Zdarzenie","Spółka","Szczegóły"],
+    s.events.map(e=>`<tr><td class="left">${e.czas}</td><td class="left">${esc(e.zdarzenie)}</td><td>${esc(e.spolka)}</td><td class="left mute">${esc(e.szczegoly)}</td></tr>`),"Brak zdarzeń.");
+}
+async function tick(){try{const r=await fetch("/api/state");render(await r.json())}catch(e){$("warn").textContent="Brak odpowiedzi serwera podglądu: "+e}}
+tick().then(()=>setTab(location.hash==="#logi"?"logi":"portfel"));setInterval(tick,10000);
+setInterval(()=>{if(!$("tab-logi").hidden)loadLog()},10000);
+</script></body></html>
